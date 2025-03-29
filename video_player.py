@@ -74,91 +74,124 @@ class VideoInspector:
                 tag="texture_effect3",
             )
 
-        # Create main window
+        # Create main window for original video
         with dpg.window(
-            label="Video Inspector",
-            width=self.display_width + 200,
-            height=self.display_height * 2 + 150,
+            label="Original Video",
+            width=self.display_width,
+            height=self.display_height,
+            pos=[0, 0],
+            no_resize=True,
         ):
-            # Controls
-            with dpg.group(horizontal=True):
-                dpg.add_button(label="Previous Frame", callback=self.prev_frame)
-                dpg.add_button(label="Next Frame", callback=self.next_frame)
-                dpg.add_button(label="Play/Pause", callback=self.toggle_play)
-
             # Frame information
             with dpg.group():
                 dpg.add_text("", tag="frame_info")
 
-            # Original video window
-            with dpg.child_window(
+            # Original video
+            dpg.add_image(
+                "texture_original",
                 width=self.display_width,
                 height=self.display_height,
-                tag="original_window",
-            ):
-                dpg.add_image(
-                    "texture_original",
-                    width=self.display_width,
-                    height=self.display_height,
-                )
+            )
 
-            # Effect windows in a grid layout
-            x_pos = self.display_width + WINDOW_OFFSET
-            y_pos = 0
-
-            with dpg.window(
-                label="Effect 1 - Grayscale",
-                pos=[0, self.display_height + WINDOW_OFFSET],
+        # Effect 1 - Bottom left
+        with dpg.window(
+            label="Effect 1 - Grayscale",
+            pos=[0, self.display_height + WINDOW_OFFSET],
+            width=self.display_width,
+            height=self.display_height,
+            no_resize=True,
+        ):
+            dpg.add_image(
+                "texture_effect1",
                 width=self.display_width,
                 height=self.display_height,
-                no_resize=True,
-            ):
-                dpg.add_image(
-                    "texture_effect1",
-                    width=self.display_width,
-                    height=self.display_height,
-                )
+            )
 
-            with dpg.window(
-                label="Effect 2 - Edge Detection",
-                pos=[
-                    self.display_width + WINDOW_OFFSET,
-                    self.display_height + WINDOW_OFFSET,
-                ],
+        # Effect 2 - Bottom right
+        with dpg.window(
+            label="Effect 2 - Edge Detection",
+            pos=[
+                self.display_width + WINDOW_OFFSET,
+                self.display_height + WINDOW_OFFSET,
+            ],
+            width=self.display_width,
+            height=self.display_height,
+            no_resize=True,
+        ):
+            dpg.add_image(
+                "texture_effect2",
                 width=self.display_width,
                 height=self.display_height,
-                no_resize=True,
-            ):
-                dpg.add_image(
-                    "texture_effect2",
-                    width=self.display_width,
-                    height=self.display_height,
-                )
+            )
 
-            with dpg.window(
-                label="Effect 3 - Blur",
-                pos=[self.display_width + WINDOW_OFFSET, 0],
+        # Effect 3 - Top right
+        with dpg.window(
+            label="Effect 3 - Blur",
+            pos=[self.display_width + WINDOW_OFFSET, 0],
+            width=self.display_width,
+            height=self.display_height,
+            no_resize=True,
+        ):
+            dpg.add_image(
+                "texture_effect3",
                 width=self.display_width,
                 height=self.display_height,
-                no_resize=True,
-            ):
-                dpg.add_image(
-                    "texture_effect3",
-                    width=self.display_width,
-                    height=self.display_height,
+            )
+
+        # Controls window - Below the second row
+        with dpg.window(
+            label="Controls",
+            pos=[0, (self.display_height + WINDOW_OFFSET) * 2],
+            width=self.display_width * 2 + WINDOW_OFFSET,
+            height=150,  # Increased height for slider
+            no_resize=True,
+        ):
+            with dpg.group(horizontal=True):
+                dpg.add_button(
+                    label="Previous Frame",
+                    callback=self.prev_frame,
+                    width=150,
+                    height=50,
+                )
+                dpg.add_button(
+                    label="Next Frame", callback=self.next_frame, width=150, height=50
+                )
+                dpg.add_button(
+                    label="Play/Pause", callback=self.toggle_play, width=150, height=50
                 )
 
-        # Create viewport
+            # Add frame slider
+            with dpg.group(width=self.display_width * 2):
+                dpg.add_slider_int(
+                    label="Frame",
+                    default_value=0,
+                    min_value=0,
+                    max_value=max(0, self.frame_count - 1),
+                    width=self.display_width * 2 - 20,
+                    callback=self.slider_frame_change,
+                    tag="frame_slider",
+                )
+
+        # Create viewport - Adjust height to include controls window
         dpg.create_viewport(
             title="Video Inspector",
             width=self.display_width * 2 + WINDOW_OFFSET * 2,
-            height=self.display_height * 2 + WINDOW_OFFSET * 2,
+            height=self.display_height * 2
+            + WINDOW_OFFSET * 3
+            + 100,  # Add height for controls window
         )
         dpg.setup_dearpygui()
         dpg.show_viewport()
 
         # Set the first frame
         self.update_frame(0)
+
+    def slider_frame_change(self, sender, app_data):
+        """Callback for when the slider value changes"""
+        # Only update if the value actually changed to avoid infinite loops
+        if app_data != self.current_frame_idx:
+            self.is_playing = False  # Stop playback when manually changing frames
+            self.update_frame(app_data)
 
     def update_frame(self, frame_idx):
         # Ensure frame index is within bounds
@@ -178,6 +211,17 @@ class VideoInspector:
             "frame_info",
             f"Frame: {frame_idx + 1}/{self.frame_count} | Time: {frame_idx / self.fps:.2f}s",
         )
+
+        # Update slider value (without triggering callback)
+        if dpg.does_item_exist("frame_slider"):
+            # Get current callback
+            current_callback = dpg.get_item_callback("frame_slider")
+            # Temporarily remove callback
+            dpg.set_item_callback("frame_slider", None)
+            # Update value
+            dpg.set_value("frame_slider", frame_idx)
+            # Restore callback
+            dpg.set_item_callback("frame_slider", current_callback)
 
         # Process the frame for display
         self.process_and_display_frame(frame)
