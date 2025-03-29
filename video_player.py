@@ -1,246 +1,275 @@
 import dearpygui.dearpygui as dpg
 import cv2
 import numpy as np
-import os
+import time
 
-class VideoPlayer:
-    def __init__(self):
-        self.cap = None
-        self.current_frame = 0
-        self.total_frames = 0
-        self.frame_width = 0
-        self.frame_height = 0
-        self.playing = False
-        self.texture_id = None
-        self.video_path = ""
+# Constants
+# SCALE_FACTOR = 1.0  # Scale factor for the video display
+SCALE_FACTOR = 0.25  # Scale factor for the video display
+WINDOW_OFFSET = 20  # Offset between windows in pixels
 
-    def load_video(self, video_path):
-        """Load a video file and initialize parameters."""
-        if not os.path.exists(video_path):
-            print(f"Error: Video file '{video_path}' not found.")
-            return False
+# Video path from file
+with open("video_path.txt", "r") as f:
+    VIDEO_PATH = f.readline().strip()
 
+
+class VideoInspector:
+    def __init__(self, video_path):
         self.video_path = video_path
         self.cap = cv2.VideoCapture(video_path)
 
         if not self.cap.isOpened():
-            print(f"Error: Could not open video file '{video_path}'.")
-            return False
+            raise ValueError(f"Could not open video file: {video_path}")
 
-        self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        self.frame_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        self.frame_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        self.current_frame = 0
+        # Get video properties
+        self.frame_count = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        self.fps = self.cap.get(cv2.CAP_PROP_FPS)
+        self.width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        self.height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-        # Set slider max value
-        dpg.set_value("frame_slider", 0)
-        dpg.configure_item("frame_slider", max_value=self.total_frames-1)
+        # Set display dimensions
+        self.display_width = int(self.width * SCALE_FACTOR)
+        self.display_height = int(self.height * SCALE_FACTOR)
 
-        # Update frame counter text
-        self.update_frame_counter()
+        # Current frame and playback state
+        self.current_frame_idx = 0
+        self.is_playing = False
+        self.last_play_time = 0
 
-        # Load first frame
-        self.show_frame(0)
+        # Initialize DearPyGUI
+        self.setup_dpg()
 
-        return True
+    def setup_dpg(self):
+        dpg.create_context()
 
-    def show_frame(self, frame_number):
-        """Display the specified frame."""
-        if self.cap is None:
-            return
+        # Create texture registry
+        with dpg.texture_registry(show=False):
+            # Main video texture
+            dpg.add_dynamic_texture(
+                width=self.width,
+                height=self.height,
+                default_value=np.zeros(self.width * self.height * 4, dtype=np.float32),
+                tag="texture_original",
+            )
 
-        # Ensure frame number is within valid range
-        frame_number = max(0, min(frame_number, self.total_frames - 1))
+            # Effect textures
+            dpg.add_dynamic_texture(
+                width=self.width,
+                height=self.height,
+                default_value=np.zeros(self.width * self.height * 4, dtype=np.float32),
+                tag="texture_effect1",
+            )
 
-        # Set position to the requested frame
-        self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+            dpg.add_dynamic_texture(
+                width=self.width,
+                height=self.height,
+                default_value=np.zeros(self.width * self.height * 4, dtype=np.float32),
+                tag="texture_effect2",
+            )
 
-        # Read the frame
+            dpg.add_dynamic_texture(
+                width=self.width,
+                height=self.height,
+                default_value=np.zeros(self.width * self.height * 4, dtype=np.float32),
+                tag="texture_effect3",
+            )
+
+        # Create main window
+        with dpg.window(
+            label="Video Inspector",
+            width=self.display_width + 200,
+            height=self.display_height * 2 + 150,
+        ):
+            # Controls
+            with dpg.group(horizontal=True):
+                dpg.add_button(label="Previous Frame", callback=self.prev_frame)
+                dpg.add_button(label="Next Frame", callback=self.next_frame)
+                dpg.add_button(label="Play/Pause", callback=self.toggle_play)
+
+            # Frame information
+            with dpg.group():
+                dpg.add_text("", tag="frame_info")
+
+            # Original video window
+            with dpg.child_window(
+                width=self.display_width,
+                height=self.display_height,
+                tag="original_window",
+            ):
+                dpg.add_image(
+                    "texture_original",
+                    width=self.display_width,
+                    height=self.display_height,
+                )
+
+            # Effect windows in a grid layout
+            x_pos = self.display_width + WINDOW_OFFSET
+            y_pos = 0
+
+            with dpg.window(
+                label="Effect 1 - Grayscale",
+                pos=[0, self.display_height + WINDOW_OFFSET],
+                width=self.display_width,
+                height=self.display_height,
+                no_resize=True,
+            ):
+                dpg.add_image(
+                    "texture_effect1",
+                    width=self.display_width,
+                    height=self.display_height,
+                )
+
+            with dpg.window(
+                label="Effect 2 - Edge Detection",
+                pos=[
+                    self.display_width + WINDOW_OFFSET,
+                    self.display_height + WINDOW_OFFSET,
+                ],
+                width=self.display_width,
+                height=self.display_height,
+                no_resize=True,
+            ):
+                dpg.add_image(
+                    "texture_effect2",
+                    width=self.display_width,
+                    height=self.display_height,
+                )
+
+            with dpg.window(
+                label="Effect 3 - Blur",
+                pos=[self.display_width + WINDOW_OFFSET, 0],
+                width=self.display_width,
+                height=self.display_height,
+                no_resize=True,
+            ):
+                dpg.add_image(
+                    "texture_effect3",
+                    width=self.display_width,
+                    height=self.display_height,
+                )
+
+        # Create viewport
+        dpg.create_viewport(
+            title="Video Inspector",
+            width=self.display_width * 2 + WINDOW_OFFSET * 2,
+            height=self.display_height * 2 + WINDOW_OFFSET * 2,
+        )
+        dpg.setup_dearpygui()
+        dpg.show_viewport()
+
+        # Set the first frame
+        self.update_frame(0)
+
+    def update_frame(self, frame_idx):
+        # Ensure frame index is within bounds
+        frame_idx = max(0, min(frame_idx, self.frame_count - 1))
+        self.current_frame_idx = frame_idx
+
+        # Set the video position and read the frame
+        self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
         ret, frame = self.cap.read()
 
         if not ret:
-            print(f"Error: Could not read frame {frame_number}.")
+            print(f"Failed to read frame {frame_idx}")
             return
 
-        # Update current frame number
-        self.current_frame = frame_number
+        # Update frame info text
+        dpg.set_value(
+            "frame_info",
+            f"Frame: {frame_idx + 1}/{self.frame_count} | Time: {frame_idx / self.fps:.2f}s",
+        )
 
-        # Convert frame from BGR to RGB
+        # Process the frame for display
+        self.process_and_display_frame(frame)
+
+    def process_and_display_frame(self, frame):
+        # Convert BGR to RGB
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-        # Resize if needed to fit display area
-        display_width = dpg.get_item_width("image_display")
-        display_height = dpg.get_item_height("image_display")
+        # Create effect frames
+        # Effect 1: Grayscale
+        frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        frame_gray_rgb = cv2.cvtColor(frame_gray, cv2.COLOR_GRAY2RGB)
 
-        # Calculate aspect ratio preserving resize
-        aspect_ratio = self.frame_width / self.frame_height
+        # Effect 2: Edge Detection
+        frame_edges = cv2.Canny(frame_gray, 100, 200)
+        frame_edges_rgb = cv2.cvtColor(frame_edges, cv2.COLOR_GRAY2RGB)
 
-        if display_width / display_height > aspect_ratio:
-            # Height is the limiting factor
-            new_height = display_height
-            new_width = int(new_height * aspect_ratio)
-        else:
-            # Width is the limiting factor
-            new_width = display_width
-            new_height = int(new_width / aspect_ratio)
+        # Effect 3: Blur
+        frame_blur = cv2.GaussianBlur(frame, (15, 15), 0)
+        frame_blur_rgb = cv2.cvtColor(frame_blur, cv2.COLOR_BGR2RGB)
 
-        # Resize the frame
-        frame_resized = cv2.resize(frame_rgb, (new_width, new_height))
+        # Convert to float32 and normalize to 0-1 range
+        frame_rgb_f32 = frame_rgb.astype(np.float32) / 255.0
+        frame_gray_rgb_f32 = frame_gray_rgb.astype(np.float32) / 255.0
+        frame_edges_rgb_f32 = frame_edges_rgb.astype(np.float32) / 255.0
+        frame_blur_rgb_f32 = frame_blur_rgb.astype(np.float32) / 255.0
 
-        # Update texture
-        if self.texture_id is None:
-            with dpg.texture_registry():
-                self.texture_id = dpg.add_dynamic_texture(new_width, new_height, frame_resized)
-                # Update the image widget to use our new texture
-                dpg.configure_item("image", texture_tag=self.texture_id)
-        else:
-            dpg.set_value(self.texture_id, frame_resized)
+        # Add alpha channel (all opaque)
+        frame_rgba = np.ones((self.height, self.width, 4), dtype=np.float32)
+        frame_rgba[:, :, 0:3] = frame_rgb_f32
 
-        # # Update the image widget
-        # dpg.configure_item("image", texture_tag=self.texture_id)
+        frame_gray_rgba = np.ones((self.height, self.width, 4), dtype=np.float32)
+        frame_gray_rgba[:, :, 0:3] = frame_gray_rgb_f32
 
-        # Update slider value (without triggering callback)
-        dpg.set_value("frame_slider", frame_number)
+        frame_edges_rgba = np.ones((self.height, self.width, 4), dtype=np.float32)
+        frame_edges_rgba[:, :, 0:3] = frame_edges_rgb_f32
 
-        # Update frame counter
-        self.update_frame_counter()
+        frame_blur_rgba = np.ones((self.height, self.width, 4), dtype=np.float32)
+        frame_blur_rgba[:, :, 0:3] = frame_blur_rgb_f32
 
-    def update_frame_counter(self):
-        """Update the frame counter text."""
-        if self.total_frames > 0:
-            dpg.set_value("frame_counter", f"Frame: {self.current_frame + 1}/{self.total_frames}")
+        # Flatten for DearPyGUI
+        frame_rgba_flat = frame_rgba.flatten()
+        frame_gray_rgba_flat = frame_gray_rgba.flatten()
+        frame_edges_rgba_flat = frame_edges_rgba.flatten()
+        frame_blur_rgba_flat = frame_blur_rgba.flatten()
 
-    def next_frame(self):
-        """Show the next frame."""
-        if self.current_frame < self.total_frames - 1:
-            self.show_frame(self.current_frame + 1)
+        # Update textures
+        dpg.set_value("texture_original", frame_rgba_flat)
+        dpg.set_value("texture_effect1", frame_gray_rgba_flat)
+        dpg.set_value("texture_effect2", frame_edges_rgba_flat)
+        dpg.set_value("texture_effect3", frame_blur_rgba_flat)
 
     def prev_frame(self):
-        """Show the previous frame."""
-        if self.current_frame > 0:
-            self.show_frame(self.current_frame - 1)
+        self.is_playing = False
+        self.update_frame(self.current_frame_idx - 1)
 
-    def jump_to_frame(self, frame_number):
-        """Jump to a specific frame."""
-        self.show_frame(int(frame_number))
+    def next_frame(self):
+        self.is_playing = False
+        self.update_frame(self.current_frame_idx + 1)
 
-    def play_pause(self):
-        """Toggle play/pause state."""
-        self.playing = not self.playing
+    def toggle_play(self):
+        self.is_playing = not self.is_playing
+        self.last_play_time = time.time()
 
-        # Update button text
-        if self.playing:
-            dpg.set_item_label("play_pause_button", "Pause")
-        else:
-            dpg.set_item_label("play_pause_button", "Play")
+    def run(self):
+        # Main loop
+        while dpg.is_dearpygui_running():
+            current_time = time.time()
 
-    def on_frame_change(self, sender, app_data):
-        """Callback for slider movement."""
-        self.jump_to_frame(app_data)
+            # Handle playback
+            if self.is_playing:
+                elapsed = current_time - self.last_play_time
+                if elapsed >= 1.0 / self.fps:
+                    self.last_play_time = current_time
+                    next_frame = self.current_frame_idx + 1
 
-    def on_file_dialog(self, sender, app_data):
-        """Callback for file dialog."""
-        file_path = app_data["file_path_name"]
-        if file_path:
-            self.load_video(file_path)
+                    # Loop back to the beginning if we reach the end
+                    if next_frame >= self.frame_count:
+                        next_frame = 0
 
-    def update(self):
-        """Update function called every frame."""
-        if self.playing and self.cap is not None:
-            if self.current_frame < self.total_frames - 1:
-                self.next_frame()
-            else:
-                # Stop playing when reaching the end
-                self.playing = False
-                dpg.set_item_label("play_pause_button", "Play")
+                    self.update_frame(next_frame)
 
+            dpg.render_dearpygui_frame()
 
-def main():
-    # Initialize DearPyGui
-    dpg.create_context()
-    dpg.create_viewport(title="Video Player", width=800, height=600)
-    dpg.setup_dearpygui()
-
-    # Create player instance
-    player = VideoPlayer()
-
-    # File dialog callback
-    def file_dialog_callback(sender, app_data):
-        player.on_file_dialog(sender, app_data)
-
-    # Create file dialog
-    with dpg.file_dialog(
-        directory_selector=False,
-        show=False,
-        callback=file_dialog_callback,
-        id="file_dialog",
-        width=700,
-        height=400
-    ):
-        dpg.add_file_extension(".mp4", color=(0, 255, 0, 255))
-        dpg.add_file_extension(".avi", color=(0, 255, 0, 255))
-        dpg.add_file_extension(".mov", color=(0, 255, 0, 255))
-        dpg.add_file_extension(".MOV", color=(0, 255, 0, 255))
-        dpg.add_file_extension(".mkv", color=(0, 255, 0, 255))
-        dpg.add_file_extension(".*")
-
-    # Create a default blank texture
-    with dpg.texture_registry():
-        # Create a small blank dark gray image as default
-        default_width, default_height = 640, 360
-        blank_image = np.ones((default_height, default_width, 3), dtype=np.uint8) * 25  # Dark gray
-        default_texture = dpg.add_static_texture(default_width, default_height, blank_image)
-
-    # Main window
-    with dpg.window(label="Video Player", tag="main_window"):
-        # Menu bar
-        with dpg.menu_bar():
-            with dpg.menu(label="File"):
-                dpg.add_menu_item(label="Open Video", callback=lambda: dpg.show_item("file_dialog"))
-                dpg.add_menu_item(label="Exit", callback=lambda: dpg.stop_dearpygui())
-
-        # Image display area
-        with dpg.group(horizontal=False):
-            # Frame display
-            with dpg.child_window(width=-1, height=-80, tag="image_display"):
-                dpg.add_image(default_texture, tag="image")
-
-            # Controls
-            with dpg.group(horizontal=True):
-                dpg.add_button(label="Open Video", callback=lambda: dpg.show_item("file_dialog"))
-                dpg.add_button(label="Previous", callback=lambda: player.prev_frame())
-                dpg.add_button(label="Play", tag="play_pause_button", callback=lambda: player.play_pause())
-                dpg.add_button(label="Next", callback=lambda: player.next_frame())
-                dpg.add_text("Frame: 0/0", tag="frame_counter")
-
-            # Slider
-            dpg.add_slider_int(
-                label="",
-                default_value=0,
-                min_value=0,
-                max_value=100,
-                width=-1,
-                tag="frame_slider",
-                callback=lambda sender, app_data: player.on_frame_change(sender, app_data)
-            )
-
-    # Set main window to fill viewport
-    dpg.set_primary_window("main_window", True)
-
-    # Show viewport
-    dpg.show_viewport()
-
-    # Main loop
-    while dpg.is_dearpygui_running():
-        # Update player (for playback)
-        player.update()
-
-        # Render frame
-        dpg.render_dearpygui_frame()
-
-    # Cleanup
-    dpg.destroy_context()
+        # Cleanup
+        self.cap.release()
+        dpg.destroy_context()
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        inspector = VideoInspector(VIDEO_PATH)
+        inspector.run()
+    except Exception as e:
+        print(f"Error: {e}")
