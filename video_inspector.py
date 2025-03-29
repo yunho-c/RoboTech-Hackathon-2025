@@ -226,47 +226,53 @@ class VideoInspector:
         # Process the frame for display
         self.process_and_display_frame(frame)
 
-    def process_and_display_frame(self, frame):
-        # Convert BGR to RGB
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-        # Create effect frames
-        # Effect 1: Grayscale
+    def apply_grayscale(self, frame):
+        """Applies grayscale effect and converts back to RGB."""
         frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         frame_gray_rgb = cv2.cvtColor(frame_gray, cv2.COLOR_GRAY2RGB)
+        return frame_gray_rgb
 
-        # Effect 2: Edge Detection
+    def apply_edge_detection(self, frame):
+        """Applies Canny edge detection and converts back to RGB."""
+        frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         frame_edges = cv2.Canny(frame_gray, 100, 200)
         frame_edges_rgb = cv2.cvtColor(frame_edges, cv2.COLOR_GRAY2RGB)
+        return frame_edges_rgb
 
-        # Effect 3: Blur
+    def apply_blur(self, frame):
+        """Applies Gaussian blur and converts back to RGB."""
         frame_blur = cv2.GaussianBlur(frame, (15, 15), 0)
         frame_blur_rgb = cv2.cvtColor(frame_blur, cv2.COLOR_BGR2RGB)
+        return frame_blur_rgb
 
+    def prepare_for_display(self, frame_rgb):
+        """Converts an RGB frame to RGBA float32 format suitable for DPG texture."""
         # Convert to float32 and normalize to 0-1 range
         frame_rgb_f32 = frame_rgb.astype(np.float32) / 255.0
-        frame_gray_rgb_f32 = frame_gray_rgb.astype(np.float32) / 255.0
-        frame_edges_rgb_f32 = frame_edges_rgb.astype(np.float32) / 255.0
-        frame_blur_rgb_f32 = frame_blur_rgb.astype(np.float32) / 255.0
 
         # Add alpha channel (all opaque)
         frame_rgba = np.ones((self.height, self.width, 4), dtype=np.float32)
         frame_rgba[:, :, 0:3] = frame_rgb_f32
 
-        frame_gray_rgba = np.ones((self.height, self.width, 4), dtype=np.float32)
-        frame_gray_rgba[:, :, 0:3] = frame_gray_rgb_f32
-
-        frame_edges_rgba = np.ones((self.height, self.width, 4), dtype=np.float32)
-        frame_edges_rgba[:, :, 0:3] = frame_edges_rgb_f32
-
-        frame_blur_rgba = np.ones((self.height, self.width, 4), dtype=np.float32)
-        frame_blur_rgba[:, :, 0:3] = frame_blur_rgb_f32
-
         # Flatten for DearPyGUI
         frame_rgba_flat = frame_rgba.flatten()
-        frame_gray_rgba_flat = frame_gray_rgba.flatten()
-        frame_edges_rgba_flat = frame_edges_rgba.flatten()
-        frame_blur_rgba_flat = frame_blur_rgba.flatten()
+        return frame_rgba_flat
+
+    def process_and_display_frame(self, frame):
+        """Processes the frame using CV algorithms and updates DPG textures."""
+        # Convert original BGR to RGB
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+        # Apply effects
+        frame_gray_rgb = self.apply_grayscale(frame)
+        frame_edges_rgb = self.apply_edge_detection(frame)
+        frame_blur_rgb = self.apply_blur(frame)
+
+        # Prepare frames for display
+        frame_rgba_flat = self.prepare_for_display(frame_rgb)
+        frame_gray_rgba_flat = self.prepare_for_display(frame_gray_rgb)
+        frame_edges_rgba_flat = self.prepare_for_display(frame_edges_rgb)
+        frame_blur_rgba_flat = self.prepare_for_display(frame_blur_rgb)
 
         # Update textures
         dpg.set_value("texture_original", frame_rgba_flat)
