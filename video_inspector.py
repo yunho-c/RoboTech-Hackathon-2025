@@ -41,13 +41,6 @@ class VideoInspector:
         if not self.cap.isOpened():
             raise ValueError(f"Could not open video file: {video_path}")
 
-        # self.depth_model = DepthAnythingV2(**model_configs[encoder])
-        # self.depth_model.load_state_dict(
-        #     torch.load(
-        #         f"checkpoints/depth_anything_v2_{encoder}.pth", map_location="cpu"
-        #     )
-        # )
-        # self.depth_model = self.depth_model.to(device).eval()
         # Load computer vision models
         self.depth_model = DAM.model
         self.grounding_processor = GSAM2.grounding_processor
@@ -116,10 +109,6 @@ class VideoInspector:
             pos=[0, 0],
             no_resize=True,
         ):
-            # Frame information
-            with dpg.group():
-                dpg.add_text("", tag="frame_info")
-
             # Original video
             dpg.add_image(
                 "texture_original",
@@ -180,19 +169,17 @@ class VideoInspector:
             height=150,  # Increased height for slider
             no_resize=True,
         ):
+            # Frame information
+            with dpg.group():
+                dpg.add_text("", tag="frame_info")
+
             with dpg.group(horizontal=True):
                 dpg.add_button(
                     label="Previous Frame",
                     callback=self.prev_frame,
-                    width=150,
-                    height=50,
                 )
-                dpg.add_button(
-                    label="Next Frame", callback=self.next_frame, width=150, height=50
-                )
-                dpg.add_button(
-                    label="Play/Pause", callback=self.toggle_play, width=150, height=50
-                )
+                dpg.add_button(label="Next Frame", callback=self.next_frame)
+                dpg.add_button(label="Play/Pause", callback=self.toggle_play)
 
             # Add frame slider
             with dpg.group(width=self.display_width * 2):
@@ -262,13 +249,6 @@ class VideoInspector:
 
     def apply_depth_estimation(self, frame):
         """Applies depth estimation and converts to RGB display format."""
-        # # Convert to RGB and normalize
-        # frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB) / 255.0
-
-        # # Convert to tensor and add batch dimension
-        # frame_tensor = torch.from_numpy(frame_rgb).permute(2, 0, 1).unsqueeze(0).float()
-        # frame_tensor = frame_tensor.to(next(self.depth_model.parameters()).device)
-
         # Get depth map
         with torch.no_grad():
             depth = self.depth_model.infer_image(frame)
