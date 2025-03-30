@@ -1,9 +1,11 @@
-import dearpygui.dearpygui as dpg
 import cv2
+import dearpygui.dearpygui as dpg
+from depth_anything_v2.dpt import DepthAnythingV2
 import numpy as np
 import time
 import torch
-from depth_anything_v2.dpt import DepthAnythingV2
+from ultralytics import YOLO
+# local
 import DAM
 
 # Constants
@@ -137,7 +139,7 @@ class VideoInspector:
                 height=self.display_height,
             )
 
-        # Effect 3 - Top right
+        # Effect 3 - Object Detection
         with dpg.window(
             label="Effect 3 - Blur",
             pos=[self.display_width + WINDOW_OFFSET, 0],
@@ -272,11 +274,52 @@ class VideoInspector:
         frame_edges_rgb = cv2.cvtColor(frame_edges, cv2.COLOR_GRAY2RGB)
         return frame_edges_rgb
 
-    def apply_blur(self, frame):
-        """Applies Gaussian blur and converts back to RGB."""
-        frame_blur = cv2.GaussianBlur(frame, (15, 15), 0)
-        frame_blur_rgb = cv2.cvtColor(frame_blur, cv2.COLOR_BGR2RGB)
-        return frame_blur_rgb
+    def apply_object_detection(self, frame):
+        """Applies YOLO object detection and draws bounding boxes."""
+        # Convert frame to RGB (YOLO expects RGB)
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+        # Run YOLO inference
+        model = YOLO("yolov8n.pt")
+        results = model(frame_rgb)
+
+        # Draw bounding boxes on the frame
+        for result in results:
+            for box in result.boxes:
+                x1, y1, x2, y2 = map(int, box.xyxy[0])
+                conf = box.conf[0]
+                cls_id = int(box.cls[0])
+
+                # Draw rectangle
+                cv2.rectangle(frame_rgb, (x1, y1), (x2, y2), (0, 255, 0), 2)
+
+                # Enhanced text visualization
+                label = f"{result.names[cls_id]} {conf:.2f}"
+                (text_width, text_height), _ = cv2.getTextSize(
+                    label, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)
+
+                # Draw background rectangle
+                cv2.rectangle(
+                    frame_rgb,
+                    (x1, y1 - text_height - 15),
+                    (x1 + text_width, y1),
+                    (0, 0, 0),
+                    -1
+                )
+
+                # Draw text with improved visibility
+                cv2.putText(
+                    frame_rgb,
+                    label,
+                    (x1, y1 - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.8,
+                    (0, 255, 255),
+                    2,
+                    cv2.LINE_AA
+                )
+
+        return frame_rgb
 
     def prepare_for_display(self, frame_rgb):
         """Converts an RGB frame to RGBA float32 format suitable for DPG texture."""
@@ -299,19 +342,19 @@ class VideoInspector:
         # Apply effects
         frame_depth_rgb = self.apply_depth_estimation(frame)
         frame_edges_rgb = self.apply_edge_detection(frame)
-        frame_blur_rgb = self.apply_blur(frame)
+        frame_detection_rgb = self.apply_object_detection(frame)
 
         # Prepare frames for display
         frame_rgba_flat = self.prepare_for_display(frame_rgb)
         frame_depth_rgba_flat = self.prepare_for_display(frame_depth_rgb)
         frame_edges_rgba_flat = self.prepare_for_display(frame_edges_rgb)
-        frame_blur_rgba_flat = self.prepare_for_display(frame_blur_rgb)
+        frame_detection_rgba_flat = self.prepare_for_display(frame_detection_rgb)
 
         # Update textures
         dpg.set_value("texture_original", frame_rgba_flat)
         dpg.set_value("texture_effect1", frame_depth_rgba_flat)
         dpg.set_value("texture_effect2", frame_edges_rgba_flat)
-        dpg.set_value("texture_effect3", frame_blur_rgba_flat)
+        dpg.set_value("texture_effect3", frame_detection_rgba_flat)
 
     def prev_frame(self):
         self.is_playing = False
