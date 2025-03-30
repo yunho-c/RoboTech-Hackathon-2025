@@ -37,6 +37,8 @@ class VideoInspector:
     def __init__(self, video_path):
         self.video_path = video_path
         self.cap = cv2.VideoCapture(video_path)
+        self.depth_min = 0.0
+        self.depth_max = 1.0
 
         if not self.cap.isOpened():
             raise ValueError(f"Could not open video file: {video_path}")
@@ -193,13 +195,43 @@ class VideoInspector:
                     tag="frame_slider",
                 )
 
+        # Normalization controls window - Below controls window
+        with dpg.window(
+            label="Depth Normalization",
+            pos=[0, (self.display_height + WINDOW_OFFSET) * 2 + 150],
+            width=self.display_width * 2 + WINDOW_OFFSET,
+            height=150,
+            no_resize=True,
+        ):
+            dpg.add_slider_float(
+                label="Min Depth",
+                default_value=0.0,
+                min_value=0.0,
+                # max_value=1.0,
+                max_value=255.0,
+                width=self.display_width * 2 - 20,
+                callback=self.update_depth_min,
+                tag="depth_min_slider",
+            )
+            dpg.add_slider_float(
+                label="Max Depth",
+                # default_value=1.0,
+                default_value=255.0,
+                min_value=0.0,
+                # max_value=1.0,
+                max_value=255.0,
+                width=self.display_width * 2 - 20,
+                callback=self.update_depth_max,
+                tag="depth_max_slider",
+            )
+
         # Create viewport - Adjust height to include controls window
         dpg.create_viewport(
             title="Video Inspector",
             width=self.display_width * 2 + WINDOW_OFFSET * 2,
             height=self.display_height * 2
             + WINDOW_OFFSET * 3
-            + 100,  # Add height for controls window
+            + 250,  # Add height for controls and normalization windows
         )
         dpg.setup_dearpygui()
         dpg.show_viewport()
@@ -213,6 +245,16 @@ class VideoInspector:
         if app_data != self.current_frame_idx:
             self.is_playing = False  # Stop playback when manually changing frames
             self.update_frame(app_data)
+
+    def update_depth_min(self, sender, app_data):
+        """Callback for when the min depth slider changes"""
+        self.depth_min = app_data
+        self.update_frame(self.current_frame_idx)
+
+    def update_depth_max(self, sender, app_data):
+        """Callback for when the max depth slider changes"""
+        self.depth_max = app_data
+        self.update_frame(self.current_frame_idx)
 
     def update_frame(self, frame_idx):
         # Ensure frame index is within bounds
@@ -256,8 +298,13 @@ class VideoInspector:
         # Normalize depth to 0-255 and convert to uint8
         # depth_normalized = cv2.normalize(depth, None, 0, 255, cv2.NORM_MINMAX)
         # depth_normalized = cv2.normalize(depth, None, 0, 255, cv2.NORM_MINMAX)
-        # depth_normalized = depth * 255
-        depth_normalized = depth * 1
+        # Normalize depth using slider values and convert to 0-255 range
+        depth_normalized = (depth - self.depth_min) / (  # manual calc
+            self.depth_max - self.depth_min + 1e-6
+        )
+        # cv2.normalize(depth, alpha=self.depth_min, ) # FAIL
+        # def normalize(src: UMat, dst: UMat, alpha: float = ..., beta: float = ..., norm_type: int = ..., dtype: int = ..., mask: UMat | None = ...) -> UMat: ...
+        depth_normalized = np.clip(depth_normalized, 0, 1) * 255
         depth_uint8 = depth_normalized.astype(np.uint8)
 
         # Convert to RGB (grayscale colormap)
