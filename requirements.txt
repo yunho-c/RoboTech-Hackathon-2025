@@ -1,0 +1,7 @@
+dearpygui
+opencv-python
+Pillow
+sam2
+torch
+transformers
+ultralytics
