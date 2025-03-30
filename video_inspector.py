@@ -5,14 +5,27 @@ import numpy as np
 import time
 import torch
 from ultralytics import YOLO
+from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
+from sam2.build_sam import build_sam2
+from sam2.sam2_image_predictor import SAM2ImagePredictor
+from PIL import Image
 
 # local
 import DAM
+import GSAM2
 
 # Constants
 # SCALE_FACTOR = 1.0  # Scale factor for the video display
 SCALE_FACTOR = 0.25  # Scale factor for the video display
 WINDOW_OFFSET = 20  # Offset between windows in pixels
+
+DEVICE = (
+    "cuda"
+    if torch.cuda.is_available()
+    else "mps"
+    if torch.backends.mps.is_available()
+    else "cpu"
+)
 
 # Video path from file
 # with open("video_path_1.txt", "r") as f:
@@ -35,7 +48,12 @@ class VideoInspector:
         #     )
         # )
         # self.depth_model = self.depth_model.to(device).eval()
+        # Load computer vision models
         self.depth_model = DAM.model
+        self.grounding_processor = GSAM2.grounding_processor
+        self.grounding_model = GSAM2.grounding_model
+        self.track_target_query = "box."  # VERY important: text queries need to be lowercased + end with a dot
+        self.sam_predictor = GSAM2.sam2_predictor
 
         # Get video properties
         self.frame_count = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -268,12 +286,50 @@ class VideoInspector:
         depth_rgb = cv2.applyColorMap(255 - depth_uint8, cv2.COLORMAP_JET)
         return depth_rgb
 
-    def apply_edge_detection(self, frame):
-        """Applies Canny edge detection and converts back to RGB."""
-        frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        frame_edges = cv2.Canny(frame_gray, 100, 200)
-        frame_edges_rgb = cv2.cvtColor(frame_edges, cv2.COLOR_GRAY2RGB)
-        return frame_edges_rgb
+    def apply_object_tracking(self, frame):
+        """Applies object tracking using Grounding DINO and SAM."""
+        # Convert frame to PIL Image
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        image = Image.fromarray(frame_rgb)
+
+        # Run Grounding DINO
+        inputs = self.grounding_processor(
+            images=image, text=self.track_target_query, return_tensors="pt"
+        ).to(DEVICE)
+        with torch.no_grad():
+            outputs = self.grounding_model(**inputs)
+
+        results = self.grounding_processor.post_process_grounded_object_detection(
+            outputs,
+            inputs.input_ids,
+            box_threshold=0.25,
+            text_threshold=0.25,
+            target_sizes=[image.size[::-1]],
+        )
+
+        # Process results
+        if len(results[0]["boxes"]) == 0:
+            return frame_rgb  # Return original frame if no objects detected
+
+        # Set image in SAM predictor
+        self.sam_predictor.set_image(frame_rgb)
+
+        # Get masks from SAM
+        masks, _, _ = self.sam_predictor.predict(
+            point_coords=None,
+            point_labels=None,
+            box=results[0]["boxes"],
+            multimask_output=False,
+        )
+
+        # Draw masks on frame
+        for mask in masks:
+            color = np.array([0, 255, 0], dtype=np.uint8)  # Green color for masks
+            frame_rgb = np.where(
+                mask[..., None], 0.5 * color + 0.5 * frame_rgb, frame_rgb
+            )
+
+        return frame_rgb.astype(np.uint8)
 
     def apply_object_detection(self, frame):
         """Applies YOLO object detection and draws bounding boxes."""
@@ -356,19 +412,19 @@ class VideoInspector:
 
         # Apply effects
         frame_depth_rgb = self.apply_depth_estimation(frame)
-        frame_edges_rgb = self.apply_edge_detection(frame)
+        frame_tracking_rgb = self.apply_object_tracking(frame)
         frame_detection_rgb = self.apply_object_detection(frame)
 
         # Prepare frames for display
         frame_rgba_flat = self.prepare_for_display(frame_rgb)
         frame_depth_rgba_flat = self.prepare_for_display(frame_depth_rgb)
-        frame_edges_rgba_flat = self.prepare_for_display(frame_edges_rgb)
+        frame_tracking_rgba_flat = self.prepare_for_display(frame_tracking_rgb)
         frame_detection_rgba_flat = self.prepare_for_display(frame_detection_rgb)
 
         # Update textures
         dpg.set_value("texture_original", frame_rgba_flat)
         dpg.set_value("texture_effect1", frame_depth_rgba_flat)
-        dpg.set_value("texture_effect2", frame_edges_rgba_flat)
+        dpg.set_value("texture_effect2", frame_tracking_rgba_flat)
         dpg.set_value("texture_effect3", frame_detection_rgba_flat)
 
     def prev_frame(self):
