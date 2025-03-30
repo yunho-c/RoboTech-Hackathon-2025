@@ -9,13 +9,14 @@ from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
 from sam2.build_sam import build_sam2
 from sam2.sam2_image_predictor import SAM2ImagePredictor
 from PIL import Image
+import pyvista as pv
+import threading
 
 # local
 import DAM
 import GSAM2
 
 # Constants
-# SCALE_FACTOR = 1.0  # Scale factor for the video display
 SCALE_FACTOR = 0.25  # Scale factor for the video display
 WINDOW_OFFSET = 20  # Offset between windows in pixels
 
@@ -28,7 +29,6 @@ DEVICE = (
 )
 
 # Video path from file
-# with open("video_path_1.txt", "r") as f:
 with open("video_path_2.txt", "r") as f:
     VIDEO_PATH = f.readline().strip()
 
@@ -39,6 +39,11 @@ class VideoInspector:
         self.cap = cv2.VideoCapture(video_path)
         self.depth_min = 0.0
         self.depth_max = 1.0
+        self.pv_mesh = None
+        self.pv_plotter = None
+        self.pv_thread = None
+        self.current_frame_rgb = None
+        self.current_depth = None
 
         if not self.cap.isOpened():
             raise ValueError(f"Could not open video file: {video_path}")
@@ -65,8 +70,74 @@ class VideoInspector:
         self.is_playing = False
         self.last_play_time = 0
 
+        # Initialize 3D visualization
+        self.setup_3d_visualization()
+
         # Initialize DearPyGUI
         self.setup_dpg()
+
+    def setup_3d_visualization(self):
+        """Initialize PyVista plotter in a separate thread"""
+        self.pv_plotter = pv.Plotter()
+        self.pv_plotter.set_background('black')
+        self.pv_thread = threading.Thread(target=self.pv_plotter.show, daemon=True)
+        self.pv_thread.start()
+
+    def create_depth_mesh(self, frame_rgb, depth):
+        """Create a 3D mesh from depth data and frame RGB"""
+        # Normalize depth
+        depth_normalized = (depth - depth.min()) / (depth.max() - depth.min() + 1e-6)
+
+        # Create grid coordinates
+        rows, cols = depth.shape
+        x = np.linspace(0, cols, cols)
+        y = np.linspace(0, rows, rows)
+        xx, yy = np.meshgrid(x, y)
+
+        # Scale depth for better visualization
+        zz = depth_normalized * 100
+
+        # Create structured grid
+        grid = pv.StructuredGrid(xx, yy, zz)
+
+        # Add texture coordinates
+        tex_coords = np.column_stack([
+            xx.ravel() / xx.max(),
+            yy.ravel() / yy.max()
+        ])
+
+        # Convert frame to texture
+        frame_rgb = cv2.cvtColor(frame_rgb, cv2.COLOR_BGR2RGB)
+        texture = pv.numpy_to_texture(frame_rgb)
+
+        return grid, texture
+
+    def update_3d_visualization(self, frame_rgb, depth):
+        """Update the 3D visualization with new frame and depth data"""
+        if self.pv_plotter is None:
+            return
+
+        # Create new mesh
+        grid, texture = self.create_depth_mesh(frame_rgb, depth)
+
+        # Clear previous actors
+        self.pv_plotter.clear()
+
+        # Add new mesh
+        self.pv_plotter.add_mesh(
+            grid,
+            texture=texture,
+            smooth_shading=True,
+            show_edges=False
+        )
+
+        # Update camera to follow the mesh
+        self.pv_plotter.camera_position = 'xy'
+        self.pv_plotter.camera.azimuth = 30
+        self.pv_plotter.camera.elevation = 30
+
+        # Force render update
+        self.pv_plotter.render()
 
     def setup_dpg(self):
         dpg.create_context()
@@ -207,7 +278,6 @@ class VideoInspector:
                 label="Min Depth",
                 default_value=0.0,
                 min_value=0.0,
-                # max_value=1.0,
                 max_value=255.0,
                 width=self.display_width * 2 - 20,
                 callback=self.update_depth_min,
@@ -215,10 +285,8 @@ class VideoInspector:
             )
             dpg.add_slider_float(
                 label="Max Depth",
-                # default_value=1.0,
                 default_value=255.0,
                 min_value=0.0,
-                # max_value=1.0,
                 max_value=255.0,
                 width=self.display_width * 2 - 20,
                 callback=self.update_depth_max,
@@ -241,9 +309,8 @@ class VideoInspector:
 
     def slider_frame_change(self, sender, app_data):
         """Callback for when the slider value changes"""
-        # Only update if the value actually changed to avoid infinite loops
         if app_data != self.current_frame_idx:
-            self.is_playing = False  # Stop playback when manually changing frames
+            self.is_playing = False
             self.update_frame(app_data)
 
     def update_depth_min(self, sender, app_data):
@@ -257,11 +324,9 @@ class VideoInspector:
         self.update_frame(self.current_frame_idx)
 
     def update_frame(self, frame_idx):
-        # Ensure frame index is within bounds
         frame_idx = max(0, min(frame_idx, self.frame_count - 1))
         self.current_frame_idx = frame_idx
 
-        # Set the video position and read the frame
         self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
         ret, frame = self.cap.read()
 
@@ -269,57 +334,36 @@ class VideoInspector:
             print(f"Failed to read frame {frame_idx}")
             return
 
-        # Update frame info text
         dpg.set_value(
             "frame_info",
             f"Frame: {frame_idx + 1}/{self.frame_count} | Time: {frame_idx / self.fps:.2f}s",
         )
 
-        # Update slider value (without triggering callback)
         if dpg.does_item_exist("frame_slider"):
-            # Get current callback
             current_callback = dpg.get_item_callback("frame_slider")
-            # Temporarily remove callback
             dpg.set_item_callback("frame_slider", None)
-            # Update value
             dpg.set_value("frame_slider", frame_idx)
-            # Restore callback
             dpg.set_item_callback("frame_slider", current_callback)
 
-        # Process the frame for display
         self.process_and_display_frame(frame)
 
     def apply_depth_estimation(self, frame):
         """Applies depth estimation and converts to RGB display format."""
-        # Get depth map
         with torch.no_grad():
             depth = self.depth_model.infer_image(frame)
+            self.current_depth = depth  # Store for 3D visualization
 
-        # Normalize depth to 0-255 and convert to uint8
-        # depth_normalized = cv2.normalize(depth, None, 0, 255, cv2.NORM_MINMAX)
-        # depth_normalized = cv2.normalize(depth, None, 0, 255, cv2.NORM_MINMAX)
-        # Normalize depth using slider values and convert to 0-255 range
-        depth_normalized = (depth - self.depth_min) / (  # manual calc
-            self.depth_max - self.depth_min + 1e-6
-        )
-        # cv2.normalize(depth, alpha=self.depth_min, ) # FAIL
-        # def normalize(src: UMat, dst: UMat, alpha: float = ..., beta: float = ..., norm_type: int = ..., dtype: int = ..., mask: UMat | None = ...) -> UMat: ...
+        depth_normalized = (depth - self.depth_min) / (self.depth_max - self.depth_min + 1e-6)
         depth_normalized = np.clip(depth_normalized, 0, 1) * 255
         depth_uint8 = depth_normalized.astype(np.uint8)
-
-        # Convert to RGB (grayscale colormap)
-        # depth_rgb = cv2.cvtColor(depth_uint8, cv2.COLOR_GRAY2RGB)
-        # depth_rgb = cv2.applyColorMap(depth_uint8, cv2.COLORMAP_JET)
         depth_rgb = cv2.applyColorMap(255 - depth_uint8, cv2.COLORMAP_JET)
         return depth_rgb
 
     def apply_object_tracking(self, frame):
         """Applies object tracking using Grounding DINO and SAM."""
-        # Convert frame to PIL Image
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         image = Image.fromarray(frame_rgb)
 
-        # Run Grounding DINO
         inputs = self.grounding_processor(
             images=image, text=self.track_target_query, return_tensors="pt"
         ).to(DEVICE)
@@ -334,14 +378,10 @@ class VideoInspector:
             target_sizes=[image.size[::-1]],
         )
 
-        # Process results
         if len(results[0]["boxes"]) == 0:
-            return frame_rgb  # Return original frame if no objects detected
+            return frame_rgb
 
-        # Set image in SAM predictor
         self.sam_predictor.set_image(frame_rgb)
-
-        # Get masks from SAM
         masks, _, _ = self.sam_predictor.predict(
             point_coords=None,
             point_labels=None,
@@ -349,9 +389,8 @@ class VideoInspector:
             multimask_output=False,
         )
 
-        # Draw masks on frame
         for mask in masks:
-            color = np.array([0, 255, 0], dtype=np.uint8)  # Green color for masks
+            color = np.array([0, 255, 0], dtype=np.uint8)
             frame_rgb = np.where(
                 mask[..., None], 0.5 * color + 0.5 * frame_rgb, frame_rgb
             )
@@ -360,43 +399,32 @@ class VideoInspector:
 
     def apply_object_detection(self, frame):
         """Applies YOLO object detection and draws bounding boxes."""
-        # Convert frame to RGB (YOLO expects RGB)
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-        # Run YOLO inference
         model = YOLO("yolov8n.pt")
         results = model(frame_rgb)
 
-        # Draw bounding boxes on the frame
         for result in results:
             for box in result.boxes:
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
                 conf = box.conf[0]
                 cls_id = int(box.cls[0])
 
-                # Draw rectangle
                 cv2.rectangle(frame_rgb, (x1, y1), (x2, y2), (0, 255, 0), 2)
-
-                # Enhanced text visualization with boundary checking
                 label = f"{result.names[cls_id]} {conf:.2f}"
                 (text_width, text_height), _ = cv2.getTextSize(
                     label, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2
                 )
 
-                # Calculate text position - above or below box depending on space
-                if y1 - text_height - 15 > 0:  # Enough space above
+                if y1 - text_height - 15 > 0:
                     text_y = y1 - 10
                     bg_y1 = y1 - text_height - 15
                     bg_y2 = y1
-                else:  # Not enough space above, put below
+                else:
                     text_y = y2 + text_height + 5
                     bg_y1 = y2
                     bg_y2 = y2 + text_height + 10
 
-                # Ensure text doesn't extend beyond image width
                 bg_x2 = min(x1 + text_width, frame_rgb.shape[1] - 1)
-
-                # Draw background rectangle
                 cv2.rectangle(
                     frame_rgb,
                     (x1, bg_y1),
@@ -404,8 +432,6 @@ class VideoInspector:
                     (0, 0, 0),
                     -1,
                 )
-
-                # Draw text with improved visibility
                 cv2.putText(
                     frame_rgb,
                     label,
@@ -421,38 +447,34 @@ class VideoInspector:
 
     def prepare_for_display(self, frame_rgb):
         """Converts an RGB frame to RGBA float32 format suitable for DPG texture."""
-        # Convert to float32 and normalize to 0-1 range
         frame_rgb_f32 = frame_rgb.astype(np.float32) / 255.0
-
-        # Add alpha channel (all opaque)
         frame_rgba = np.ones((self.height, self.width, 4), dtype=np.float32)
         frame_rgba[:, :, 0:3] = frame_rgb_f32
-
-        # Flatten for DearPyGUI
         frame_rgba_flat = frame_rgba.flatten()
         return frame_rgba_flat
 
     def process_and_display_frame(self, frame):
         """Processes the frame using CV algorithms and updates DPG textures."""
-        # Convert original BGR to RGB
+        self.current_frame_rgb = frame  # Store for 3D visualization
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-        # Apply effects
         frame_depth_rgb = self.apply_depth_estimation(frame)
         frame_tracking_rgb = self.apply_object_tracking(frame)
         frame_detection_rgb = self.apply_object_detection(frame)
 
-        # Prepare frames for display
         frame_rgba_flat = self.prepare_for_display(frame_rgb)
         frame_depth_rgba_flat = self.prepare_for_display(frame_depth_rgb)
         frame_tracking_rgba_flat = self.prepare_for_display(frame_tracking_rgb)
         frame_detection_rgba_flat = self.prepare_for_display(frame_detection_rgb)
 
-        # Update textures
         dpg.set_value("texture_original", frame_rgba_flat)
         dpg.set_value("texture_effect1", frame_depth_rgba_flat)
         dpg.set_value("texture_effect2", frame_tracking_rgba_flat)
         dpg.set_value("texture_effect3", frame_detection_rgba_flat)
+
+        # Update 3D visualization
+        if self.current_depth is not None and self.current_frame_rgb is not None:
+            self.update_3d_visualization(self.current_frame_rgb, self.current_depth)
 
     def prev_frame(self):
         self.is_playing = False
@@ -467,18 +489,15 @@ class VideoInspector:
         self.last_play_time = time.time()
 
     def run(self):
-        # Main loop
         while dpg.is_dearpygui_running():
             current_time = time.time()
 
-            # Handle playback
             if self.is_playing:
                 elapsed = current_time - self.last_play_time
                 if elapsed >= 1.0 / self.fps:
                     self.last_play_time = current_time
                     next_frame = self.current_frame_idx + 1
 
-                    # Loop back to the beginning if we reach the end
                     if next_frame >= self.frame_count:
                         next_frame = 0
 
@@ -486,7 +505,6 @@ class VideoInspector:
 
             dpg.render_dearpygui_frame()
 
-        # Cleanup
         self.cap.release()
         dpg.destroy_context()
 
