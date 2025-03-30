@@ -2,6 +2,9 @@ import dearpygui.dearpygui as dpg
 import cv2
 import numpy as np
 import time
+import torch
+from depth_anything_v2.dpt import DepthAnythingV2
+import DAM
 
 # Constants
 # SCALE_FACTOR = 1.0  # Scale factor for the video display
@@ -9,7 +12,8 @@ SCALE_FACTOR = 0.25  # Scale factor for the video display
 WINDOW_OFFSET = 20  # Offset between windows in pixels
 
 # Video path from file
-with open("video_path.txt", "r") as f:
+# with open("video_path_1.txt", "r") as f:
+with open("video_path_2.txt", "r") as f:
     VIDEO_PATH = f.readline().strip()
 
 
@@ -20,6 +24,15 @@ class VideoInspector:
 
         if not self.cap.isOpened():
             raise ValueError(f"Could not open video file: {video_path}")
+
+        # self.depth_model = DepthAnythingV2(**model_configs[encoder])
+        # self.depth_model.load_state_dict(
+        #     torch.load(
+        #         f"checkpoints/depth_anything_v2_{encoder}.pth", map_location="cpu"
+        #     )
+        # )
+        # self.depth_model = self.depth_model.to(device).eval()
+        self.depth_model = DAM.model
 
         # Get video properties
         self.frame_count = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -95,7 +108,7 @@ class VideoInspector:
 
         # Effect 1 - Bottom left
         with dpg.window(
-            label="Effect 1 - Grayscale",
+            label="Effect 1 - Depth Estimation",
             pos=[0, self.display_height + WINDOW_OFFSET],
             width=self.display_width,
             height=self.display_height,
@@ -226,11 +239,31 @@ class VideoInspector:
         # Process the frame for display
         self.process_and_display_frame(frame)
 
-    def apply_grayscale(self, frame):
-        """Applies grayscale effect and converts back to RGB."""
-        frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        frame_gray_rgb = cv2.cvtColor(frame_gray, cv2.COLOR_GRAY2RGB)
-        return frame_gray_rgb
+    def apply_depth_estimation(self, frame):
+        """Applies depth estimation and converts to RGB display format."""
+        # # Convert to RGB and normalize
+        # frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB) / 255.0
+
+        # # Convert to tensor and add batch dimension
+        # frame_tensor = torch.from_numpy(frame_rgb).permute(2, 0, 1).unsqueeze(0).float()
+        # frame_tensor = frame_tensor.to(next(self.depth_model.parameters()).device)
+
+        # Get depth map
+        with torch.no_grad():
+            depth = self.depth_model.infer_image(frame)
+
+        # Normalize depth to 0-255 and convert to uint8
+        # depth_normalized = cv2.normalize(depth, None, 0, 255, cv2.NORM_MINMAX)
+        # depth_normalized = cv2.normalize(depth, None, 0, 255, cv2.NORM_MINMAX)
+        # depth_normalized = depth * 255
+        depth_normalized = depth * 1
+        depth_uint8 = depth_normalized.astype(np.uint8)
+
+        # Convert to RGB (grayscale colormap)
+        # depth_rgb = cv2.cvtColor(depth_uint8, cv2.COLOR_GRAY2RGB)
+        # depth_rgb = cv2.applyColorMap(depth_uint8, cv2.COLORMAP_JET)
+        depth_rgb = cv2.applyColorMap(255 - depth_uint8, cv2.COLORMAP_JET)
+        return depth_rgb
 
     def apply_edge_detection(self, frame):
         """Applies Canny edge detection and converts back to RGB."""
@@ -264,19 +297,19 @@ class VideoInspector:
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
         # Apply effects
-        frame_gray_rgb = self.apply_grayscale(frame)
+        frame_depth_rgb = self.apply_depth_estimation(frame)
         frame_edges_rgb = self.apply_edge_detection(frame)
         frame_blur_rgb = self.apply_blur(frame)
 
         # Prepare frames for display
         frame_rgba_flat = self.prepare_for_display(frame_rgb)
-        frame_gray_rgba_flat = self.prepare_for_display(frame_gray_rgb)
+        frame_depth_rgba_flat = self.prepare_for_display(frame_depth_rgb)
         frame_edges_rgba_flat = self.prepare_for_display(frame_edges_rgb)
         frame_blur_rgba_flat = self.prepare_for_display(frame_blur_rgb)
 
         # Update textures
         dpg.set_value("texture_original", frame_rgba_flat)
-        dpg.set_value("texture_effect1", frame_gray_rgba_flat)
+        dpg.set_value("texture_effect1", frame_depth_rgba_flat)
         dpg.set_value("texture_effect2", frame_edges_rgba_flat)
         dpg.set_value("texture_effect3", frame_blur_rgba_flat)
 
