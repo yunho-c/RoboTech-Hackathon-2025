@@ -5,6 +5,7 @@ import numpy as np
 import time
 import torch
 from ultralytics import YOLO
+
 # local
 import DAM
 
@@ -293,30 +294,44 @@ class VideoInspector:
                 # Draw rectangle
                 cv2.rectangle(frame_rgb, (x1, y1), (x2, y2), (0, 255, 0), 2)
 
-                # Enhanced text visualization
+                # Enhanced text visualization with boundary checking
                 label = f"{result.names[cls_id]} {conf:.2f}"
                 (text_width, text_height), _ = cv2.getTextSize(
-                    label, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)
+                    label, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2
+                )
+
+                # Calculate text position - above or below box depending on space
+                if y1 - text_height - 15 > 0:  # Enough space above
+                    text_y = y1 - 10
+                    bg_y1 = y1 - text_height - 15
+                    bg_y2 = y1
+                else:  # Not enough space above, put below
+                    text_y = y2 + text_height + 5
+                    bg_y1 = y2
+                    bg_y2 = y2 + text_height + 10
+
+                # Ensure text doesn't extend beyond image width
+                bg_x2 = min(x1 + text_width, frame_rgb.shape[1] - 1)
 
                 # Draw background rectangle
                 cv2.rectangle(
                     frame_rgb,
-                    (x1, y1 - text_height - 15),
-                    (x1 + text_width, y1),
+                    (x1, bg_y1),
+                    (bg_x2, bg_y2),
                     (0, 0, 0),
-                    -1
+                    -1,
                 )
 
                 # Draw text with improved visibility
                 cv2.putText(
                     frame_rgb,
                     label,
-                    (x1, y1 - 10),
+                    (x1, text_y),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.8,
                     (0, 255, 255),
                     2,
-                    cv2.LINE_AA
+                    cv2.LINE_AA,
                 )
 
         return frame_rgb
